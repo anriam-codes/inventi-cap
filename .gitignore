@@ -1,0 +1,7 @@
+data/processed/featured_data.csv
+.virtual_documents/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+venv/
+.venv/
