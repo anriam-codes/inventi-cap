@@ -1,81 +1,73 @@
-"""pages/home.py — Landing / overview page."""
-
 import streamlit as st
-from src.config import MODEL_METRICS, BEST_MODEL
 
+st.title("📦 Inventi")
 
-def render():
-    st.title("Inventi — Predictive Inventory Planning & Replenishment")
-    st.markdown(
-        "**Predict demand, assess inventory risk, and recommend how much to reorder.**"
-    )
-    st.markdown("---")
+st.subheader(
+    "Predictive Inventory Planning & Replenishment System"
+)
 
-    # ── KPI cards ────────────────────────────────────────────────────────────
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Best Model",    BEST_MODEL)
-    c2.metric("Best RMSE",     f"{MODEL_METRICS[BEST_MODEL]['RMSE']:.4f}")
-    c3.metric("Best MAPE",     f"{MODEL_METRICS[BEST_MODEL]['MAPE']:.2f}%")
-    c4.metric("Validation Period","2017")
+st.write(
+    "Inventi combines machine-learning demand forecasting "
+    "with inventory planning to convert predicted demand "
+    "into actionable replenishment decisions."
+)
 
-    st.markdown("---")
+st.markdown("---")
 
-    # ── Project overview ─────────────────────────────────────────────────────
-    col1, col2 = st.columns([1.4, 1])
+st.subheader("System Overview")
 
-    with col1:
-        st.subheader("🗂️ Project Pipeline")
-        st.markdown("""
-        ```
-        Historical Sales (train.csv)
-             │
-             ▼
-        Feature Engineering
-        (Calendar · Lag · Rolling · Aggregate)
-             │
-             ▼
-        XGBoost Demand Forecast
-        RMSE: 7.91   MAPE: 12.44%
-             │
-             ▼
-        Forecast Error → Inventory Risk
-             │
-             ▼
-        Safety Stock · Reorder Point
-             │
-             ▼
-        Recommended Order Quantity
-        ```
-        """)
+col1, col2, col3, col4 = st.columns(4)
 
-    with col2:
-        st.subheader("📂 Dataset Facts")
-        st.markdown("""
-        | Attribute | Value |
-        |-----------|-------|
-        | Rows | 913,000 |
-        | Columns | 4 |
-        | Stores | 10 |
-        | Items | 50 |
-        | Date Range | 2013–2017 |
-        | Missing Values | None |
-        | Engineered Features | 19 |
-        """)
+with col1:
+    st.metric("Forecast Model", "XGBoost")
 
-    st.markdown("---")
+with col2:
+    st.metric("Features", "17")
 
-    # ── Navigation guide ─────────────────────────────────────────────────────
-    st.subheader("🚀 What you can do here")
-    g1, g2, g3 = st.columns(3)
-    with g1:
-        st.info("**🤖 Forecast**\nSelect a store and item to see demand predictions.")
-    with g2:
-        st.info("**🏭 Inventory Planner**\nTurn forecasts into safety stock, reorder point and order quantity.")
-    with g3:
-        st.info("**🔍 SHAP Explainer**\nSee why the model predicted a given demand.")
+with col3:
+    st.metric("Validation Period", "2017")
 
-    st.markdown("---")
-    st.caption("Built with Streamlit · XGBoost · SHAP · Plotly")
+with col4:
+    st.metric("Decision Layer", "Inventory")
 
+st.markdown("---")
 
-render()
+st.subheader("Inventi Decision Pipeline")
+
+st.markdown(
+    """
+    **Historical Sales**
+    → **Feature Engineering**
+    → **XGBoost Forecast**
+    → **Forecast Error**
+    → **Safety Stock**
+    → **Reorder Point**
+    → **Recommended Order**
+    → **Inventory Risk**
+    """
+)
+
+st.markdown("---")
+
+st.subheader("XGBoost Validation Performance")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("MAE", "6.08")
+
+with col2:
+    st.metric("RMSE", "7.91")
+
+with col3:
+    st.metric("MAPE", "12.44%")
+            
+st.caption("Validation performed on 2017 demand data.")
+
+st.markdown("---")
+
+st.info(
+    "Use the Forecast page to inspect demand predictions "
+    "and the Inventory Planner page to generate "
+    "replenishment decisions."
+)
