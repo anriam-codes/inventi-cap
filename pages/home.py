@@ -61,7 +61,7 @@ with col2:
 
 with col3:
     st.metric("MAPE", "12.44%")
-            
+                
 st.caption("Validation performed on 2017 demand data.")
 
 st.markdown("---")

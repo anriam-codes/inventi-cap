@@ -1,142 +1,458 @@
-"""pages/inventory.py — Inventory planning (EOQ · ROP · Safety Stock)."""
+"""
+pages/inventory.py
 
-import streamlit as st
-import pandas as pd
+Inventi — Inventory Planning & Replenishment Dashboard.
+"""
+
 import numpy as np
+import pandas as pd
+import streamlit as st
 
-from src.config import INV_DEFAULTS
-from src.data_loader import load_featured_data
-from src.model_loader import load_saved_predictions
-from src.inventory import compute_inventory_plan
-from src.plots import plot_eoq_by_item, plot_rop_safety
+from src.config import (
+    INV_DEFAULTS,
+    NUM_ITEMS,
+)
+
+from src.data_loader import (
+    load_featured_data,
+    train_val_split,
+)
+
+from src.model_loader import (
+    predict_tree,
+)
+
+from src.inventory import (
+    compute_inventory_plan,
+    compute_order_quantity,
+    classify_inventory_risk,
+)
+
+from src.plots import (
+    plot_eoq_by_item,
+    plot_rop_safety,
+    plot_inventory_risk,
+)
 
 
-def render():
-    st.title("🏭 Inventory Planner")
-    st.markdown(
-        "Convert XGBoost demand forecasts into actionable inventory decisions: "
-        "**EOQ**, **Reorder Point**, and **Safety Stock** per item."
-    )
+# ── Page title ────────────────────────────────────────────────────────────────
 
-    st.sidebar.markdown("## ⚙️ Inventory Parameters")
-    ordering_cost = st.sidebar.number_input(
-        "Ordering Cost ($ per order)", value=INV_DEFAULTS["ordering_cost"], min_value=1.0
-    )
-    holding_cost = st.sidebar.number_input(
-        "Holding Cost ($ / unit / year)", value=INV_DEFAULTS["holding_cost_per_unit"], min_value=0.1
-    )
-    lead_time = st.sidebar.number_input(
-        "Lead Time (days)", value=INV_DEFAULTS["lead_time_days"], min_value=1, max_value=90
-    )
-    service_level = st.sidebar.selectbox(
-        "Service Level", ["90% (Z=1.28)", "95% (Z=1.65)", "99% (Z=2.33)"], index=1
-    )
-    z_map = {"90% (Z=1.28)": 1.28, "95% (Z=1.65)": 1.65, "99% (Z=2.33)": 2.33}
-    z_score = z_map[service_level]
+st.title("📦 Inventory Planner")
 
-    st.sidebar.markdown("---")
-    st.sidebar.info(
-        "**EOQ** = √(2DS/h)\n\n"
-        "**Safety Stock** = Z × σ × √L\n\n"
-        "**ROP** = d̄ × L + Safety Stock"
-    )
+st.markdown(
+    """
+Convert **XGBoost demand forecasts** into inventory decisions using
+forecast uncertainty, safety stock, reorder points and recommended
+replenishment quantities.
+"""
+)
 
-    # ── Load data ─────────────────────────────────────────────────────────────
-    with st.spinner("Loading forecast data..."):
-        saved = load_saved_predictions()
-        df    = load_featured_data()
 
-    val_df = df[df["date"] >= "2017-01-01"].copy()
+# ── Parameters ────────────────────────────────────────────────────────────────
 
-    if "XGBoost" in saved:
-        xgb_preds = saved["XGBoost"]
-        # Align lengths
-        n = min(len(val_df), len(xgb_preds))
-        val_df = val_df.iloc[:n].copy()
-        val_df["y_pred"] = np.array(xgb_preds[:n])
-        val_df["y_pred"] = val_df["y_pred"].clip(lower=0)
+st.sidebar.markdown("## ⚙️ Inventory Parameters")
 
-        st.success(f"Using **XGBoost** predictions (best model · MAPE ≈ 12.4%) "
-                   f"on {n:,} validation rows.")
-    else:
-        # Fallback: use actual sales as a proxy
-        st.warning(
-            "XGBoost predictions not found — using actual sales as demand proxy."
-        )
-        val_df["y_pred"] = val_df["sales"]
+ordering_cost = st.sidebar.number_input(
+    "Ordering Cost",
+    min_value=1.0,
+    value=float(
+        INV_DEFAULTS["ordering_cost"]
+    ),
+)
 
-    # ── Run inventory plan ────────────────────────────────────────────────────
-    with st.spinner("Computing inventory metrics..."):
-        inv_df = compute_inventory_plan(
-            forecast_df=val_df,
-            ordering_cost=ordering_cost,
-            holding_cost=holding_cost,
-            lead_time_days=int(lead_time),
-            z=z_score,
-        )
+holding_cost = st.sidebar.number_input(
+    "Holding Cost / Unit / Year",
+    min_value=0.1,
+    value=float(
+        INV_DEFAULTS["holding_cost_per_unit"]
+    ),
+)
 
-    # ── Summary KPIs ──────────────────────────────────────────────────────────
-    st.markdown("---")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Items Analyzed", len(inv_df))
-    c2.metric("Avg EOQ (units)",          f"{inv_df['EOQ'].mean():.0f}")
-    c3.metric("Avg Reorder Point (units)", f"{inv_df['ROP'].mean():.0f}")
-    c4.metric("Avg Safety Stock (units)",  f"{inv_df['safety_stock'].mean():.0f}")
+lead_time = st.sidebar.number_input(
+    "Lead Time (days)",
+    min_value=1,
+    max_value=90,
+    value=int(
+        INV_DEFAULTS["lead_time_days"]
+    ),
+)
 
-    # ── Charts ────────────────────────────────────────────────────────────────
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    top_n = st.slider("Items to display in charts", 5, 50, 20)
+service_level = st.sidebar.selectbox(
+    "Service Level",
+    [
+        "90% (Z=1.28)",
+        "95% (Z=1.65)",
+        "99% (Z=2.33)",
+    ],
+    index=1,
+)
 
-    with col1:
-        st.plotly_chart(plot_eoq_by_item(inv_df, top_n), use_container_width=True)
-    with col2:
-        st.plotly_chart(plot_rop_safety(inv_df, top_n),  use_container_width=True)
+z_map = {
+    "90% (Z=1.28)": 1.28,
+    "95% (Z=1.65)": 1.65,
+    "99% (Z=2.33)": 2.33,
+}
 
-    # ── Full table ────────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("📋 Full Inventory Plan")
+z_score = z_map[service_level]
 
-    display_cols = [
-        "item", "annual_forecast_demand", "avg_daily_demand",
-        "std_daily_demand", "cv", "EOQ", "safety_stock", "ROP",
+
+# ── Load data ─────────────────────────────────────────────────────────────────
+
+with st.spinner("Loading demand data..."):
+
+    df = load_featured_data()
+
+    _, val_df = train_val_split(df)
+
+
+# Keep only rows that contain all model features.
+
+val_df = val_df.dropna(
+    subset=[
+        "store",
+        "item",
+        "sales",
+        "year",
+        "month",
+        "week",
+        "day",
+        "dayofweek",
+        "is_weekend",
+        "sales_lag_1",
+        "sales_lag_7",
+        "sales_lag_14",
+        "sales_lag_28",
+        "rolling_mean_7",
+        "rolling_mean_14",
+        "rolling_mean_28",
+        "store_avg_sales",
+        "item_avg_sales",
     ]
-    rename = {
-        "item":                     "Item",
-        "annual_forecast_demand":   "Annual Demand",
-        "avg_daily_demand":         "Avg Daily Demand",
-        "std_daily_demand":         "Demand Std Dev",
-        "cv":                       "CV",
-        "EOQ":                      "EOQ (units)",
-        "safety_stock":             "Safety Stock (units)",
-        "ROP":                      "Reorder Point (units)",
-    }
-    st.dataframe(
-        inv_df[display_cols].rename(columns=rename),
+).copy()
+
+
+# ── Generate XGBoost predictions ──────────────────────────────────────────────
+
+feature_cols = [
+    "store",
+    "item",
+    "year",
+    "month",
+    "week",
+    "day",
+    "dayofweek",
+    "is_weekend",
+    "sales_lag_1",
+    "sales_lag_7",
+    "sales_lag_14",
+    "sales_lag_28",
+    "rolling_mean_7",
+    "rolling_mean_14",
+    "rolling_mean_28",
+    "store_avg_sales",
+    "item_avg_sales",
+]
+
+
+with st.spinner("Generating XGBoost demand predictions..."):
+
+    predictions = predict_tree(
+        "XGBoost",
+        val_df[feature_cols],
+    )
+
+
+val_df["y_pred"] = np.asarray(
+    predictions
+).flatten()
+
+val_df["y_pred"] = val_df[
+    "y_pred"
+].clip(lower=0)
+
+
+# Forecast error is essential for inventory uncertainty.
+
+val_df["error"] = (
+    val_df["sales"]
+    - val_df["y_pred"]
+)
+
+
+# ── Status ────────────────────────────────────────────────────────────────────
+
+st.success(
+    f"Using XGBoost forecasts on {len(val_df):,} validation observations."
+)
+
+
+# ── Inventory plan ────────────────────────────────────────────────────────────
+
+with st.spinner("Calculating inventory requirements..."):
+
+    inv_df = compute_inventory_plan(
+        forecast_df=val_df,
+        ordering_cost=ordering_cost,
+        holding_cost=holding_cost,
+        lead_time_days=int(lead_time),
+        z=z_score,
+    )
+
+
+# ── KPI section ───────────────────────────────────────────────────────────────
+
+st.markdown("---")
+
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    st.metric(
+        "Items Analyzed",
+        len(inv_df),
+    )
+
+with c2:
+    st.metric(
+        "Avg Daily Demand",
+        f"{inv_df['avg_daily_demand'].mean():.1f}",
+    )
+
+with c3:
+    st.metric(
+        "Avg Safety Stock",
+        f"{inv_df['safety_stock'].mean():.1f}",
+    )
+
+with c4:
+    st.metric(
+        "Avg Reorder Point",
+        f"{inv_df['ROP'].mean():.1f}",
+    )
+
+
+# ── Charts ────────────────────────────────────────────────────────────────────
+
+st.markdown("---")
+
+st.subheader("Inventory Overview")
+
+top_n = st.slider(
+    "Items to display",
+    min_value=5,
+    max_value=50,
+    value=20,
+)
+
+
+col1, col2 = st.columns(2)
+
+with col1:
+
+    st.plotly_chart(
+        plot_eoq_by_item(
+            inv_df,
+            top_n,
+        ),
         use_container_width=True,
     )
 
-    # ── Download ──────────────────────────────────────────────────────────────
-    csv = inv_df[display_cols].rename(columns=rename).to_csv(index=False)
-    st.download_button(
-        "⬇️ Download Inventory Plan CSV",
-        data=csv,
-        file_name="inventory_plan.csv",
-        mime="text/csv",
+with col2:
+
+    st.plotly_chart(
+        plot_rop_safety(
+            inv_df,
+            top_n,
+        ),
+        use_container_width=True,
     )
 
-    # ── Formulas reference ────────────────────────────────────────────────────
-    with st.expander("📖 Formula Reference"):
-        st.markdown("""
-        | Formula | Description |
-        |---------|-------------|
-        | **EOQ = √(2DS/h)** | D=Annual Demand, S=Ordering Cost, h=Holding Cost |
-        | **Safety Stock = Z × σ × √L** | Z=Service Level Z-score, σ=Demand Std Dev, L=Lead Time |
-        | **ROP = d̄ × L + Safety Stock** | d̄=Avg Daily Demand, L=Lead Time |
 
-        **CV (Coefficient of Variation)** = σ / d̄  
-        Items with CV > 0.5 have high demand variability — consider increasing safety stock.
-        """)
+# ── Inventory table ───────────────────────────────────────────────────────────
+
+st.markdown("---")
+
+st.subheader("📋 Inventory Requirements")
+
+display_cols = [
+    "item",
+    "annual_forecast_demand",
+    "avg_daily_demand",
+    "error_std",
+    "cv",
+    "EOQ",
+    "safety_stock",
+    "ROP",
+]
+
+display_names = {
+    "item": "Item",
+    "annual_forecast_demand": "Annual Forecast Demand",
+    "avg_daily_demand": "Avg Daily Demand",
+    "error_std": "Forecast Error Std",
+    "cv": "CV",
+    "EOQ": "EOQ",
+    "safety_stock": "Safety Stock",
+    "ROP": "Reorder Point",
+}
+
+display_df = (
+    inv_df[display_cols]
+    .rename(columns=display_names)
+)
+
+st.dataframe(
+    display_df,
+    use_container_width=True,
+    hide_index=True,
+)
 
 
-render()
+# ── Replenishment decision ────────────────────────────────────────────────────
+
+st.markdown("---")
+
+st.subheader("🎯 Replenishment Decision")
+
+col1, col2 = st.columns(2)
+
+with col1:
+
+    selected_item = st.selectbox(
+        "Select Item",
+        list(range(1, NUM_ITEMS + 1)),
+    )
+
+with col2:
+
+    current_stock = st.number_input(
+        "Current Stock (units)",
+        min_value=0.0,
+        value=100.0,
+        step=1.0,
+    )
+
+
+selected_row = inv_df[
+    inv_df["item"] == selected_item
+]
+
+
+if not selected_row.empty:
+
+    row = selected_row.iloc[0]
+
+    recommended_order = compute_order_quantity(
+        current_stock=current_stock,
+        reorder_point=row["ROP"],
+    )
+
+    risk = classify_inventory_risk(
+        current_stock=current_stock,
+        reorder_point=row["ROP"],
+        avg_daily_demand=row["avg_daily_demand"],
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "Forecast / Day",
+            f"{row['avg_daily_demand']:.1f}",
+        )
+
+    with col2:
+        st.metric(
+            "Safety Stock",
+            f"{row['safety_stock']:.1f}",
+        )
+
+    with col3:
+        st.metric(
+            "Reorder Point",
+            f"{row['ROP']:.1f}",
+        )
+
+    with col4:
+        st.metric(
+            "Recommended Order",
+            f"{recommended_order:.0f}",
+        )
+
+    st.markdown("### Inventory Status")
+
+    if risk == "Stockout":
+        st.error(
+            "🔴 STOCKOUT — immediate replenishment required."
+        )
+
+    elif risk == "Reorder":
+        st.warning(
+            "🟠 REORDER — current stock is below the reorder point."
+        )
+
+    elif risk == "Overstock":
+        st.warning(
+            "🟡 OVERSTOCK — inventory is significantly above the reorder point."
+        )
+
+    else:
+        st.success(
+            "🟢 HEALTHY — current inventory is within the desired range."
+        )
+
+    st.markdown(
+        f"""
+**Decision explanation**
+
+- Current stock: **{current_stock:.0f} units**
+- Reorder point: **{row['ROP']:.0f} units**
+- Safety stock: **{row['safety_stock']:.0f} units**
+- Lead time: **{lead_time} days**
+- Recommended order: **{recommended_order:.0f} units**
+"""
+    )
+
+
+# ── Download ──────────────────────────────────────────────────────────────────
+
+st.markdown("---")
+
+csv = display_df.to_csv(
+    index=False
+)
+
+st.download_button(
+    "⬇️ Download Inventory Plan",
+    data=csv,
+    file_name="inventi_inventory_plan.csv",
+    mime="text/csv",
+)
+
+
+# ── Formula reference ─────────────────────────────────────────────────────────
+
+with st.expander("📖 Inventory Formula Reference"):
+
+    st.markdown(
+        """
+**EOQ**
+
+Economic Order Quantity determines an efficient order size
+based on annual demand, ordering cost and holding cost.
+
+**Safety Stock**
+
+Safety stock protects against demand uncertainty derived from
+forecast error.
+
+**Reorder Point**
+
+The reorder point combines expected demand during supplier lead
+time with safety stock.
+
+**Recommended Order**
+
+Order quantity is the amount required to bring current stock
+back to the reorder point.
+"""
+    )
